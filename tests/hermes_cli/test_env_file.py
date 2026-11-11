@@ -191,3 +191,39 @@ def test_symlink_aliases_share_the_canonical_mount_lock(tmp_path):
     assert env_file.read_env_bytes(pipe) == b"KEY=alias\n"
     assert (tmp_path / ".env.read.lock").exists()
     assert not (tmp_path / "alias.env.read.lock").exists()
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("operation", ["save", "remove", "sanitize"])
+def test_ordinary_profile_writes_preserve_mounted_profile_snapshot(tmp_path, monkeypatch, operation):
+    from agent.secret_scope import load_env_file
+    from hermes_cli import config
+
+    mounted = tmp_path / "mounted"
+    ordinary = tmp_path / "ordinary"
+    mounted.mkdir()
+    ordinary.mkdir()
+    pipe = mounted / ".env"
+    os.mkfifo(pipe, 0o600)
+    ordinary_env = ordinary / ".env"
+    ordinary_env.write_text(" REVIEW_OTHER_KEY = before \n", encoding="utf-8")
+    monkeypatch.setattr(config, "get_env_path", lambda: ordinary_env)
+    with producer(pipe, b"REVIEW_MOUNTED_KEY=mounted-value\n"):
+        assert load_env_file(pipe) == {"REVIEW_MOUNTED_KEY": "mounted-value"}
+
+    async def read_mounted():
+        return load_env_file(pipe)
+
+    assert asyncio.run(read_mounted()) == {"REVIEW_MOUNTED_KEY": "mounted-value"}
+    if operation == "save":
+        config.save_env_value("REVIEW_OTHER_KEY", "after")
+        assert load_env_file(ordinary_env) == {"REVIEW_OTHER_KEY": "after"}
+    elif operation == "remove":
+        assert config.remove_env_value("REVIEW_OTHER_KEY") is True
+        assert load_env_file(ordinary_env) == {}
+    else:
+        assert config.sanitize_env_file() > 0
+        assert load_env_file(ordinary_env) == {"REVIEW_OTHER_KEY": "before"}
+    # No producer remains: an on-loop lookup must reuse the unchanged profile's
+    # snapshot, not demand another authorization or fail as a cold FIFO read.
+    assert asyncio.run(read_mounted()) == {"REVIEW_MOUNTED_KEY": "mounted-value"}

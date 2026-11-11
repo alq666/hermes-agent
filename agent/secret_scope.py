@@ -331,15 +331,15 @@ def _parse_env_value(raw_value: str) -> str:
 # invalidate_env_cache()`` calls it for Hermes's own .env writers.
 # Mounted FIFOs instead share a process-lifetime byte snapshot via hermes_cli.env_file;
 # reopening a secret-manager pipe on hot paths can block or compete with another reader.
+# Routine parse invalidation never evicts those snapshots; explicit FIFO refresh
+# goes through hermes_cli.env_file.invalidate_fifo_cache.
 _ENV_FILE_CACHE: OrderedDict[str, tuple[bytes, dict[str, str]]] = OrderedDict()
 _ENV_FILE_CACHE_LOCK = threading.Lock()
 _ENV_FILE_CACHE_MAX = 64  # one entry per profile home in practice
 
 
 def invalidate_env_file_cache(env_path: Optional[Path] = None) -> None:
-    """Drop one path from the ``load_env_file()`` memo, or all of them."""
-    from hermes_cli.env_file import invalidate_fifo_cache
-    invalidate_fifo_cache(env_path)
+    """Drop parsed dotenv entries only, leaving mounted FIFO snapshots intact."""
     with _ENV_FILE_CACHE_LOCK:
         if env_path is None:
             _ENV_FILE_CACHE.clear()
